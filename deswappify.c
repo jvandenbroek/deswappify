@@ -8,6 +8,105 @@
 
 #define PAGESIZE 4096
 
+int displayhelp(char **argv)
+{
+	printf("Usage: \n %s [options]\n\n", argv[0]);
+	printf(
+		"Basic options:\n"
+		" -a\t\t\tall processes\n"
+		" -p\t\t\tone or more PIDs seperated by space\n");
+	return -1;
+}
+
+int processall(char **proclist)
+{
+	DIR *d = NULL;
+	struct dirent *ent;
+	char dirname[] = "/proc/";
+	int i = 0;
+	if (!(d = opendir(dirname)))
+	{
+		fprintf(stderr, "error opening /proc directory\n");
+		return 1;
+	}
+
+	while ((ent = readdir(d)) != NULL)
+	{
+		if (ent->d_type == DT_DIR && ent->d_name[0] >= '0' && ent->d_name[0] <= '9')
+		{
+			proclist[i] = ent->d_name;
+			//printf("%s\n", proclist[i]);
+			++i;
+		}
+	}
+	proclist[i] = 0;
+}
+
+int parsearg(int argc, char **argv, char **proclist)
+{
+	int help = 0;
+	int i = 1;
+
+	for(; i < argc; ++i)
+	{
+		const char * thisargv = argv[i];
+		if(thisargv[0] == '-')
+		{
+			int np = ++i;
+			if(np > argc)
+			{
+				help = 1;
+				break;
+			}
+			const char * nextargv = argv[np];
+			switch(thisargv[1])
+			{
+			case 'a':
+				if (argc == 2 && thisargv[2] == '\0')
+					processall(proclist);
+				else
+					help = 1;
+				break;
+			case 'p':
+			{
+				if (argc <= np || thisargv[2] != '\0')
+					help = 1;
+				else
+				{
+					int ii = 0;
+					for (; np < argc && *argv[np] != '-'; ++np)
+					{
+						// only allow digits for PID
+						for (int i = 0; argv[np][i] != '\0'; ++i)
+						{
+							if (argv[np][i] < '0' || argv[np][i] > '9')
+							{
+								help = 1;
+								break;
+							}
+						}
+						proclist[ii] = argv[np];
+						i++;
+						ii++;
+					}
+					proclist[ii] = 0;
+				}
+			}
+				break;
+			default:
+				help = 1;
+				break;
+			}
+		}
+		else
+		{
+			help = 1;
+		}
+	}
+	if (help)
+		displayhelp(argv);
+}
+
 unsigned long long unhex(const char *cp)
 {
     unsigned long long ull = 0;
@@ -31,31 +130,31 @@ unsigned char deswappify(char **proclist)
 
 	if (regcomp(&regex, "^([0-9a-f]+)-([0-9a-f]+)", REG_EXTENDED))
 	{
-	  printf("Could not compile regular expression.\n");
-	  return 1;
+		fprintf(stderr, "Could not compile regular expression.\n");
+		return 1;
 	};
 	if (regcomp(&regex2, "^Swap:\\s*([0-9]+) *kB", REG_EXTENDED))
 	{
-	  printf("Could not compile regular expression.\n");
-	  return 1;
+		fprintf(stderr, "Could not compile regular expression.\n");
+		return 1;
 	};
 	char sLine[1024];
 	char addr_buf[32];
 	char bytes_buf[100];
-
+	char matched = 0;
+	char *last = 0;
+	setbuf(stdout, NULL);
 	for (unsigned int i = 0; proclist[i] != NULL; ++i)
 	{
 		char path[1024] = "/proc/";
-//		printf("%s\n", proclist[i]);
 		strcat(path, proclist[i]);
 		strcat(path, "/smaps");
 		FILE *fp = fopen(path , "r");
 		if (!fp)
 		{
-			printf("failed to open %s\n", path);
+			fprintf(stderr, "failed to open %s\n", path);
 			continue;
 		}
-
 		while(fgets(sLine, 1024, fp))
 		{
 			if (regexec(&regex, sLine, 3, groupArray, 0) == 0)
@@ -81,16 +180,26 @@ unsigned char deswappify(char **proclist)
 				int fd = open(path, O_RDONLY);
 				if (!fd)
 				{
-					printf("failed to open %s\n", path);
+					fprintf(stderr, "failed to open %s\n", path);
 					break;
 				}
-				printf("Deswappifying %s (0x%lx-0x%lx)...\n", &*proclist[i], start_addr, end_addr);
+				if (!last)
+				{
+					printf("Deswappifying PID %s.", &*proclist[i]);
+					last = &*proclist[i];
+				}
+				else
+				{
+					printf(".");
+				}
+				if (!matched)
+					matched = 1;
 				lseek(fd, start_addr, SEEK_SET);
 				int returnv;
 				for (; start_addr < end_addr; start_addr += PAGESIZE)
 					if (!(returnv = read(fd, buf, sizeof(buf))))
 					{
-						printf("error reading addr 0x%lx from %s\n", start_addr, path);
+						fprintf(stderr, "error reading addr 0x%lx from %s\n", start_addr, path);
 						close(fd);
 						break;
 					}
@@ -99,6 +208,12 @@ unsigned char deswappify(char **proclist)
 			}
 		}
 		fclose(fp);
+		if (matched)
+		{
+			printf("\n");
+			last = 0;
+			matched = 0;
+		}
 	}
 	regfree(&regex);
 	regfree(&regex2);
@@ -108,54 +223,27 @@ unsigned char deswappify(char **proclist)
 
 int main(int argc, char **argv)
 {
-	char str[10] = {};
-
 	if (argc == 1)
 	{
-		FILE *fp = fopen("/proc/sys/kernel/pid_max" , "r");
-		if (fp)
-		{
-			if(!(fgets(str, 10, fp)))
-			{
-				printf("error opening /proc/sys/kernel/pid_max!\n");
-				return 1;
-			}
-			fclose(fp);
-		}
+		displayhelp(argv);
+		return -1;
 	}
-
-	char *proclist[argc == 1 ? atoi(str) + 1 : argc - 1];
-
-	if (argc == 1)
+	char str[10] = {};
+	FILE *fp = fopen("/proc/sys/kernel/pid_max" , "r");
+	if (fp)
 	{
-		DIR *d = NULL;
-		struct dirent *ent;
-		char dirname[] = "/proc/";
-		if (!(d = opendir(dirname)))
+		if(!(fgets(str, 10, fp)))
 		{
-			printf("error opening /proc directory\n");
+			fprintf(stderr, "error opening /proc/sys/kernel/pid_max!\n");
 			return 1;
 		}
+		fclose(fp);
+	}
 
-		int i = 0;
-		while ((ent = readdir(d)) != NULL)
-		{
-			if (ent->d_type == DT_DIR && ent->d_name[0] >= '0' && ent->d_name[0] <= '9')
-			{
-				proclist[i] = ent->d_name;
-				//printf("%s\n", proclist[i]);
-				++i;
-			}
-		}
-		proclist[i] = 0;
-	}
-	else
-	{
-		unsigned char i = 0;
-		for (; i < argc - 1; i++)
-			proclist[i] = argv[i + 1];
-		proclist[i] = 0;
-	}
+	char *proclist[argc == 2 ? atoi(str) + 1 : argc - 1];
+	if (parsearg(argc, argv, proclist) == -1)
+		return -1;
+
 	deswappify(proclist);
 
 	return 0;

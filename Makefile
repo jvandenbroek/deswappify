@@ -21,14 +21,14 @@ $(OBJS): Makefile
 $(OUTPUT): $(OBJS)
 
 $(OBJDIR)/%.o: %.c	Makefile
-	@echo "Compiling (C++) $< to $@"
+	@echo "Compiling $< to $@"
 	@mkdir -p $(OBJDIR)
-	$(CXX) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(OBJDIR)/%:
 	@echo "Linking $@"
 	@mkdir -p $(OBJDIR)
-	$(CXX) $(CFLAGS) $(INCLUDES) -o $@ $(filter %.o %.a,$+) $(LIBDIR) $(LIBRARIES)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(filter %.o %.a,$+) $(LIBDIR) $(LIBRARIES)
 
 clean:
 	@rm -f $(OBJDIR)/*

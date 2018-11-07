@@ -11,9 +11,10 @@ in the source distribution for its full text.
 #include <unistd.h>
 #include <dirent.h>
 #include <string.h>
-#include <regex.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+
+#define VERSION "0.2"
 
 static char quiet = 0;
 static int max_pid = 0;
@@ -25,18 +26,18 @@ int displayhelp(char **argv)
 	printf("Usage: \n %s [options]\n\n", argv[0]);
 	printf(
 		"Basic options:\n"
-		" -a\t\t\tall processes\n"
-		" -p\t\t\tone or more PIDs seperated by space\n"
-		" -q\t\t\tsuppress standard output\n"
-		" -qq\t\t\tsuppress all output, including errors\n"
-		" -v\t\t\tprint version info\n"
-		" -b\t\t\tbuffer size in kB for fetching pages (default and minimum is 4)\n");
+		" -a\t\tall processes\n"
+		" -p\t\tone or more PIDs seperated by space\n"
+		" -q\t\tsuppress standard output\n"
+		" -qq\t\tsuppress all output, including errors\n"
+		" -v\t\tprint version info\n"
+		" -b\t\tbuffer size in kB for fetching pages (default and minimum is 4)\n");
 	exit(1);
 }
 
 int displayversion()
 {
-	printf(" deswappify 0.1\n");
+	printf(" deswappify %s\n", VERSION);
 }
 
 char **processall(char **proclist)
@@ -154,7 +155,7 @@ char **parsearg(int argc, char **argv, char **proclist)
 					help = 1;
 				break;
 			case 'v':
-				printf(" deswappify 0.1\n");
+				displayversion();
 				exit(0);
 				break;
 			case 'b':
@@ -224,35 +225,22 @@ unsigned long long unhex(const char *cp)
 unsigned char deswappify(char **proclist)
 {
 	long pagesize = sysconf(_SC_PAGESIZE);
-	char buf[bufsize * 1024];
+	unsigned long kbytes = 0, total = 0;
 	size_t start_addr, end_addr;
-	regex_t regex, regex2;
-	regmatch_t groupArray[3];
-	unsigned int bytes = 0, total = 0;
-	int rc;
-
- 	if (regcomp(&regex, "^([0-9a-f]+)-([0-9a-f]+)", REG_EXTENDED))
-	{
-		if (quiet < 2) fprintf(stderr, "Could not compile regular expression.\n");
-		return 1;
-	};
-	if (regcomp(&regex2, "^Swap:\\s*([0-9]+) *kB", REG_EXTENDED))
-	{
-		if (quiet < 2) fprintf(stderr, "Could not compile regular expression.\n");
-		return 1;
-	};
-	char sLine[100];
+	char buf[bufsize * 1024];
+	char sLine[200];
 	char addr_buf[32];
-	char bytes_buf[100];
+	char kbytes_buf[32];
 	char matched = 0;
 	char last = 0;
+	char path[50] = "/proc/";
+
 	setbuf(stdout, NULL);
 	for (int i = 0; proclist[i] != NULL; i++)
 	{
-		char path[1024] = "/proc/";
-		strcat(path, proclist[i]);
-		strcat(path, "/smaps");
-		//printf("%s\n", path);
+		int pid_length = strlen(proclist[i]);
+		memcpy(&path[6], proclist[i], pid_length + 1);
+		memcpy(&path[6 + pid_length], "/smaps", 6 + pid_length + 1);
 		FILE *fp = fopen(path , "r");
 		if (!fp)
 		{
@@ -260,74 +248,119 @@ unsigned char deswappify(char **proclist)
 			continue;
 		}
 
-		while (fgets(sLine, 100, fp) != NULL)
+		char addr_line = 0;
+		while (fgets(sLine, sizeof(sLine), fp) != NULL)
 		{
-			if (regexec(&regex, sLine, 3, groupArray, 0) == 0)
+			int iii = 0;
+			int ii = 0;
+			for (; ii < sizeof(sLine); ++ii)
 			{
-				memset(addr_buf, 0, sizeof(addr_buf));
-				strncpy(addr_buf, &sLine[groupArray[1].rm_so], groupArray[1].rm_eo - groupArray[1].rm_so);
-				start_addr = unhex(addr_buf);
-
-				memset(addr_buf, 0, sizeof(addr_buf));
-				strncpy(addr_buf, &sLine[groupArray[2].rm_so], groupArray[2].rm_eo - groupArray[2].rm_so);
-				end_addr = unhex(addr_buf);
-			}
-			else if (regexec(&regex2, sLine, 2, groupArray, 0) == 0)
-			{
-				memset(bytes_buf, 0, sizeof(bytes_buf));
-				strncpy(bytes_buf, &sLine[groupArray[1].rm_so], groupArray[1].rm_eo - groupArray[1].rm_so);
-				bytes = atoi(bytes_buf);
-				if (bytes == 0)
-					continue;
-				char path[30] = "/proc/";
-				strcat(path, proclist[i]);
-				strcat(path, "/mem");
-				int fd = open(path, O_RDONLY);
-				if (!fd)
+				if ((sLine[0] >= '0' && sLine[0] <= '9') || (sLine[0] >= 'a' && sLine[0] <= 'f'))
 				{
-					if (quiet < 2) fprintf(stderr, "failed to open %s\n", path);
+					for (; ii < sizeof(sLine); ++ii)
+					{
+						if (ii > 7 && sLine[ii] == '-') // assume memory address length is at least 8 (hex string)
+						{
+							addr_line = 1;
+							memset(addr_buf, 0, sizeof(addr_buf));
+							strncpy(addr_buf, &sLine[0], ii);
+							start_addr = unhex(addr_buf);
+							iii = ii;
+							for (; ii < sizeof(sLine); ++ii)
+							{
+								if (sLine[ii] == ' ')
+								{
+									if (--ii - iii != iii) // end_addr should have the same length as start_addr
+									{
+										ii = sizeof(sLine) - 1;
+										break;
+									}
+									memset(addr_buf, 0, sizeof(addr_buf));
+									strncpy(addr_buf, &sLine[++iii], ii - iii);
+									end_addr = unhex(addr_buf);
+									ii = sizeof(sLine) - 1;
+								}
+							}
+							break;
+						}
+					}
 					break;
 				}
-				if (!last)
+				else if (ii == 0 && addr_line == 1 && sLine[0] == 'S' && sLine[3] == 'p') // look for Swap
 				{
-					char path[30] = "/proc/";
-					strcat(path, proclist[i]);
-					strcat(path, "/comm");
-					FILE *fd = fopen(path, "r");
-					char procname[16] = {};
-					int len;
-					if (fd)
+					for (++ii; ii < sizeof(sLine); ++ii)
 					{
-						if (fgets(procname, sizeof(procname), fd) == NULL)
-							strcpy(procname, "unknown");
-						len = strlen(procname);
-						if (procname[len - 1] == '\n')
-							procname[len - 1] = '\0';
-						fclose(fd);
+						if (sLine[ii] == 0)
+							break;
+						if (sLine[ii] >= '1' && sLine[ii] <= '9') // skip starting with 0, which means nothing is swapped
+						{
+							iii = ii;
+							for (; ii < sizeof(sLine); ++ii)
+							{
+								if (sLine[ii] == ' ' && sLine[ii + 1] == 'k')
+								{
+									memset(kbytes_buf, 0, sizeof(kbytes_buf));
+									strncpy(kbytes_buf, &sLine[iii], ii - iii);
+									kbytes = atoi(kbytes_buf);
+									if (kbytes == 0)
+										break;
+									memcpy(&path[6], proclist[i], pid_length + 1);
+									memcpy(&path[6 + pid_length], "/mem\0", 6 + pid_length + 1);
+									int fd = open(path, O_RDONLY);
+									if (!fd)
+									{
+										if (quiet < 2) fprintf(stderr, "failed to open %s\n", path);
+										break;
+									}
+									if (!last)
+									{
+										memcpy(&path[6], proclist[i], pid_length + 1);
+										memcpy(&path[6 + pid_length], "/comm\0", 6 + pid_length + 1);
+										FILE *fd = fopen(path, "r");
+										char procname[16] = {};
+										int len;
+										if (fd)
+										{
+											if (fgets(procname, sizeof(procname), fd) == NULL)
+												strcpy(procname, "unknown");
+											len = strlen(procname);
+											if (procname[len - 1] == '\n')
+												procname[len - 1] = '\0';
+											fclose(fd);
+										}
+										if (quiet < 1) printf("Deswappifying PID %s (%s)", proclist[i], procname);
+										last = 1;
+									}
+									else
+									{
+										printf(".");
+									}
+									if (!matched)
+										matched = 1;
+									lseek(fd, start_addr, SEEK_SET);
+									int returnv;
+									for (; start_addr < end_addr; start_addr += (bufsize * 1024))
+										if (!(returnv = read(fd, buf, bufsize * 1024)))
+										{
+											if (quiet < 2) fprintf(stderr, "error reading addr 0x%lx from %s\n", start_addr, path);
+											close(fd);
+											break;
+										}
+										for (start_addr -= end_addr; start_addr = 0; start_addr - pagesize)
+											returnv = read(fd, buf, pagesize);
+
+									close(fd);
+									total += kbytes;
+									ii = sizeof(sLine) - 1;
+									break;
+								}
+							}
+						}
 					}
-					if (quiet < 1) printf("Deswappifying PID %s (%s)", proclist[i], procname);
-					last = 1;
+					addr_line = 0;
 				}
 				else
-				{
-					printf(".");
-				}
-				if (!matched)
-					matched = 1;
-				lseek(fd, start_addr, SEEK_SET);
-				int returnv;
-				for (; start_addr < end_addr; start_addr += (bufsize * 1024))
-					if (!(returnv = read(fd, buf, bufsize * 1024)))
-					{
-						if (quiet < 2) fprintf(stderr, "error reading addr 0x%lx from %s\n", start_addr, path);
-						close(fd);
-						break;
-					}
-					for (start_addr -= end_addr; start_addr = 0; start_addr - pagesize)
-						returnv = read(fd, buf, pagesize);
-
-				close(fd);
-				total += bytes;
+					break;
 			}
 		}
 		fclose(fp);
@@ -338,9 +371,7 @@ unsigned char deswappify(char **proclist)
 			matched = 0;
 		}
 	}
-	regfree(&regex);
-	regfree(&regex2);
-	if (quiet < 1) printf("Total deswappified: %d kB\n", total);
+	if (quiet < 1) printf("Total deswappified: %ld kB\n", total);
 	return 0;
 }
 

@@ -235,7 +235,9 @@ unsigned char deswappify(char **proclist)
 	char last = 0;
 	char path[50] = "/proc/";
 
-	setbuf(stdout, NULL);
+	if (isatty(fileno(stdout))) // only flush output on new line when redirected to file
+		setbuf(stdout, NULL);
+
 	for (int i = 0; proclist[i] != NULL; i++)
 	{
 		int pid_length = strlen(proclist[i]);
@@ -272,13 +274,13 @@ unsigned char deswappify(char **proclist)
 								{
 									if (--ii - iii != iii) // end_addr should have the same length as start_addr
 									{
-										ii = sizeof(sLine) - 1;
+										ii = sizeof(sLine);
 										break;
 									}
 									memset(addr_buf, 0, sizeof(addr_buf));
 									strncpy(addr_buf, &sLine[++iii], ii - iii);
 									end_addr = unhex(addr_buf);
-									ii = sizeof(sLine) - 1;
+									ii = sizeof(sLine);
 								}
 							}
 							break;
@@ -351,7 +353,7 @@ unsigned char deswappify(char **proclist)
 
 									close(fd);
 									total += kbytes;
-									ii = sizeof(sLine) - 1;
+									ii = sizeof(sLine);
 									break;
 								}
 							}
